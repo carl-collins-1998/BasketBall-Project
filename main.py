@@ -53,10 +53,10 @@ async def lifespan(app: FastAPI):
             traceback.print_exc()
 
     print("=" * 60 + "\n")
-
+    
     # This yield is where the application runs
     yield
-
+    
     # Shutdown logic
     print("\n" + "=" * 60)
     print("AI BASKETBALL REFEREE API SHUTTING DOWN")
@@ -348,8 +348,7 @@ if __name__ == "__main__":
     # Configuration
     HOST = "0.0.0.0"  # Listen on all interfaces
     PORT = 8000
-
-
+    
     # Try to find an available port if 8000 is taken
     def find_available_port(start_port=8000, max_attempts=10):
         for port in range(start_port, start_port + max_attempts):
@@ -360,7 +359,6 @@ if __name__ == "__main__":
             except socket.error:
                 continue
         return None
-
 
     # Check if port is available
     try:
@@ -381,5 +379,5 @@ if __name__ == "__main__":
     if HOST == "0.0.0.0":
         print(f"  - http://10.0.0.164:{available_port}")  # Your local IP
         print(f"  - http://YOUR_NETWORK_IP:{available_port}")
-
+    
     uvicorn.run(app, host=HOST, port=available_port)
