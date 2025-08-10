@@ -4,6 +4,7 @@ from typing import Dict, Any, List
 import tempfile
 import shutil
 from contextlib import asynccontextmanager
+import urllib.request
 
 from fastapi import FastAPI, UploadFile, File, HTTPException, Form
 from fastapi.middleware.cors import CORSMiddleware
@@ -18,9 +19,29 @@ import cv2
 from basketball_referee import ImprovedFreeThrowScorer, CVATDatasetConverter, FreeThrowModelTrainer
 
 # Global variables
-MODEL_PATH = r"C:/Users/carlc/Desktop/API  AI REFEREE MODEL/runs/detect/train3/weights/best.pt"
+MODEL_URL = os.getenv("MODEL_URL")
 scorer_instance = None
 
+def download_model():
+    """Download model from URL if not present"""
+    if os.path.exists(MODEL_PATH):
+        print(f"Model already exists at {MODEL_PATH}")
+        return True
+    
+    if not MODEL_URL:
+        print("Model not found locally and MODEL_URL not set")
+        print("Please set MODEL_URL environment variable in Render dashboard")
+        return False
+    
+    try:
+        print(f"Downloading model from {MODEL_URL}")
+        os.makedirs(os.path.dirname(MODEL_PATH), exist_ok=True)
+        urllib.request.urlretrieve(MODEL_URL, MODEL_PATH)
+        print("Model downloaded successfully")
+        return True
+    except Exception as e:
+        print(f"Failed to download model: {e}")
+        return False
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -37,11 +58,16 @@ async def lifespan(app: FastAPI):
     print(f"Python file: {__file__}")
     print(f"Model path: {MODEL_PATH}")
     print(f"Model exists: {os.path.exists(MODEL_PATH)}")
+    
+    # Try to download model if on Render
+    if "RENDER" in os.environ and not os.path.exists(MODEL_PATH):
+        if download_model():
+            print("✅ Model downloaded from URL")
+        else:
+            print("⚠️ Model download failed - API will run without scoring functionality")
 
-    if not os.path.exists(MODEL_PATH):
-        print("❌ Model file not found!")
-        print("=" * 60 + "\n")
-    else:
+	
+    if os.path.exists(MODEL_PATH):
         try:
             print("Loading model...")
             scorer_instance = ImprovedFreeThrowScorer(MODEL_PATH)
@@ -51,6 +77,9 @@ async def lifespan(app: FastAPI):
             print(f"❌ Failed to load model: {e}")
             import traceback
             traceback.print_exc()
+    else:
+        print("❌ Model file not found!")
+        print("API will run but scoring functionality will be disabled.")
 
     print("=" * 60 + "\n")
     
@@ -90,9 +119,10 @@ async def root():
         "message": "AI Basketball Referee API",
         "status": "ready" if scorer_instance is not None else "model not loaded",
         "model_loaded": scorer_instance is not None,
-        "endpoints": ["/", "/model_status", "/score_video/", "/train_model/", "/docs"]
+        "endpoints": ["/", "/model_status", "/score_video/", "/train_model/", "/docs"],
+        "deployment": "render" if "RENDER" in os.environ else "local",
+        "instructions": "Set MODEL_URL environment variable in Render to enable scoring" if "RENDER" in os.environ and not scorer_instance else None
     }
-
 
 @app.get("/model_status")
 async def model_status():
@@ -102,9 +132,10 @@ async def model_status():
         "path": MODEL_PATH,
         "exists": os.path.exists(MODEL_PATH),
         "size_mb": os.path.getsize(MODEL_PATH) / 1024 / 1024 if os.path.exists(MODEL_PATH) else 0,
-        "scorer_type": str(type(scorer_instance)) if scorer_instance else None
+        "scorer_type": str(type(scorer_instance)) if scorer_instance else None,
+        "model_url": "Set" if MODEL_URL else "Not set",
+        "environment": "render" if "RENDER" in os.environ else "local"
     }
-
 
 @app.post("/score_video/")
 async def score_video(video_file: UploadFile = File(...)) -> Dict[str, Any]:
@@ -116,7 +147,7 @@ async def score_video(video_file: UploadFile = File(...)) -> Dict[str, Any]:
     if scorer_instance is None:
         raise HTTPException(
             status_code=503,
-            detail="Model not loaded. Check server startup logs."
+            detail="Model not loaded. Please set MODEL_URL environment variable in Render dashboard."
         )
 
     # Save and process video
@@ -191,6 +222,7 @@ async def score_video(video_file: UploadFile = File(...)) -> Dict[str, Any]:
         }
 
 
+
 @app.post("/train_model/")
 async def train_model(
         cvat_zip_files: List[UploadFile] = File(..., description="CVAT YOLO 1.1 annotated datasets as ZIP files"),
@@ -212,6 +244,11 @@ async def train_model(
     Returns:
         Training results including model performance metrics
     """
+    if "RENDER" in os.environ:
+        raise HTTPException(
+            status_code=503,
+            detail="Model training is disabled on Render due to resource limitations. Please train locally and upload the model."
+        )
     global scorer_instance, MODEL_PATH
 
     print(f"\n=== Training New Model ===")
@@ -340,6 +377,10 @@ async def train_model(
                 detail=f"Model training failed: {str(e)}"
             )
 
+@app.get("/health")
+async def health():
+    """Health check endpoint for Render"""
+    return {"status": "healthy"}
 
 if __name__ == "__main__":
     import uvicorn
@@ -347,37 +388,26 @@ if __name__ == "__main__":
 
     # Configuration
     HOST = "0.0.0.0"  # Listen on all interfaces
-    PORT = 8000
-    
-    # Try to find an available port if 8000 is taken
-    def find_available_port(start_port=8000, max_attempts=10):
-        for port in range(start_port, start_port + max_attempts):
-            try:
-                with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-                    s.bind((HOST, port))
-                    return port
-            except socket.error:
-                continue
-        return None
+    PORT = int(os.getenv("PORT", 10000))  # Use Render's PORT env var
 
-    # Check if port is available
-    try:
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-            s.bind((HOST, PORT))
-            available_port = PORT
-    except socket.error:
-        print(f"⚠️  Port {PORT} is already in use. Finding an available port...")
-        available_port = find_available_port(PORT)
-        if available_port:
-            print(f"✅ Using port {available_port} instead")
-        else:
-            print("❌ No available ports found. Please free up a port.")
-            exit(1)
+    # For local development, check if port is available
+    if "RENDER" not in os.environ:
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                s.bind((HOST, PORT))
+                available_port = PORT
+        except socket.error:
+            print(f"⚠️  Port {PORT} is already in use. Finding an available port...")
+            # Find available port logic here...
+            available_port = 8001  # Fallback
+    else:
+        # On Render, use the PORT they provide
+        available_port = PORT
 
     print(f"Starting server on:")
     print(f"  - http://127.0.0.1:{available_port}")
-    if HOST == "0.0.0.0":
+    if HOST == "0.0.0.0" and "RENDER" not in os.environ:
         print(f"  - http://10.0.0.164:{available_port}")  # Your local IP
         print(f"  - http://YOUR_NETWORK_IP:{available_port}")
-    
+
     uvicorn.run(app, host=HOST, port=available_port)
